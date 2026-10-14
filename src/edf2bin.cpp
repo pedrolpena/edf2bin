@@ -13,9 +13,9 @@
 // newer MK21 software ("// MK21 EXPORT DATA FILE  (EDF)") and the one
 // written by xbtbinfileutils ("// AOML EXPORT DATA FILE  (EDF)").
 //
-// Type 4 stores the resistance values and the EDF header lines the other
-// fields can not hold, types 1 to 3 store the temperatures and the fields
-// Amverseas uses.
+// Type 4 stores the resistance values, or the temperatures when the EDF has
+// no resistances, and the EDF header lines the other fields can not hold,
+// types 1 to 3 store the temperatures and the fields Amverseas uses.
 //============================================================================
 
 #include <algorithm>
@@ -56,13 +56,6 @@ constexpr int MISSING = -999;
 // set marks a missing value.
 constexpr double MIN_STORED_TEMPERATURE = -4.00;
 constexpr double MAX_STORED_TEMPERATURE = 36.94;
-
-// Coefficients of the Steinhart-Hart equation used by
-// XBTResistanceToTemperatureConverter
-constexpr double SH_A = 0.001290123;
-constexpr double SH_B = 0.00023322529;
-constexpr double SH_C = 0.00000045791293;
-constexpr double SH_D = 0.000000071625593;
 
 // Header fields of the binary that EDF files do not hold. They can be given
 // on the command line.
@@ -113,7 +106,7 @@ const std::vector<Metadata> METADATA = {
 struct Options {
     std::string input = "-";
     std::string output = "-";
-    int type = MessageType::MESSAGE_TYPE_4;
+    int type = MessageType::MESSAGE_TYPE_3;
     bool quiet = false;
     // the metadata options that were given, in the order of METADATA
     std::vector<std::pair<const Metadata *, std::string>> metadata;
@@ -128,7 +121,7 @@ void usage(std::ostream &out) {
         << "standard output unless -o is used.\n"
         << "\n"
         << "Options:\n"
-        << "  -T, --type NUMBER     message type to save, 1 to 4 (default 4). Only type 4\n"
+        << "  -T, --type NUMBER     message type to save, 1 to 4 (default 3). Only type 4\n"
         << "                        keeps the resistances and the EDF header, types 1 to 3\n"
         << "                        store the temperatures\n"
         << "  -o, --output FILE     write the binary to FILE (\"-\" is standard output)\n"
@@ -150,7 +143,8 @@ void usage(std::ostream &out) {
     out << "\n"
         << "Examples:\n"
         << "  edf2bin PODS16001.edf -o PODS16001.bin\n"
-        << "  edf2bin --type 3 -c WTEC -s \"Oleander\" --ship-speed 9.5 PODS16001.edf -o PODS16001.bin\n"
+        << "  edf2bin --type 4 PODS16001.edf -o PODS16001.bin\n"
+        << "  edf2bin -c WTEC -s \"Oleander\" --ship-speed 9.5 PODS16001.edf -o PODS16001.bin\n"
         << "  cat TD_00001.EDF | edf2bin -c WTEC --rider-name \"Jane Doe\" > TD_00001.bin\n";
 }
 
@@ -222,26 +216,6 @@ bool parsePosition(const std::string &s, double &degrees, int &decimals) {
         degrees = -degrees;
     }
     return true;
-}
-
-/**
- * Converts a temperature to the thermistor resistance by solving the
- * Steinhart-Hart equation used by XBTResistanceToTemperatureConverter with
- * Newton's method. Used for EDF files that only hold temperatures.
- */
-double temperatureToResistance(double temperature) {
-    double target = 1.0 / (temperature + 273.15);
-    double x = std::log(10000.0);
-    for (int i = 0; i < 50; i++) {
-        double f = SH_A + SH_B * x + SH_C * x * x + SH_D * x * x * x - target;
-        double df = SH_B + 2 * SH_C * x + 3 * SH_D * x * x;
-        double step = f / df;
-        x -= step;
-        if (std::fabs(step) < 1e-12) {
-            break;
-        }
-    }
-    return std::exp(x);
 }
 
 /**
@@ -663,7 +637,7 @@ bool parseEDF(const std::vector<std::string> &lines, XBTProfile &profile, const 
         std::cerr << "edf2bin: the file has neither resistance nor temperature values" << std::endl;
         return false;
     }
-    std::vector<int> written = EDFFormat::getDataFields(options.type == MessageType::MESSAGE_TYPE_4);
+    std::vector<int> written = EDFFormat::getDataFields(options.type == MessageType::MESSAGE_TYPE_4 && resistanceColumn != -1);
     if (options.type == MessageType::MESSAGE_TYPE_4 && fields != written && format != EDFFormat::WINMK21) {
         std::string columns = "";
         for (int field : written) {
@@ -673,20 +647,18 @@ bool parseEDF(const std::vector<std::string> &lines, XBTProfile &profile, const 
     }
 
     if (options.type == MessageType::MESSAGE_TYPE_4) {
-        // type 4 stores the resistances
-        if (resistanceColumn == -1) {
-            warn(options, "the file has no resistance values, they are computed from the temperatures");
-        }
-        std::vector<double> resistances;
+        // type 4 stores the resistances. Files without them store the
+        // temperatures, resistances are not made up from them.
+        std::vector<double> points;
         for (const std::vector<double> &row : rows) {
-            if (resistanceColumn != -1) {
-                resistances.push_back(row[resistanceColumn]);
-            } else {
-                resistances.push_back(temperatureToResistance(row[temperatureColumn]));
-            }
+            points.push_back(row[resistanceColumn != -1 ? resistanceColumn : temperatureColumn]);
         }
-        profile.setResistancePoints(resistances);
-        profile.setMeasurementPoints(resistances);
+        if (resistanceColumn != -1) {
+            profile.setResistancePoints(points);
+        } else {
+            warn(options, "the file has no resistance values, the temperatures are stored instead");
+            profile.setTemperaturePoints(points);
+        }
         profile.setEDFText(text);
     } else {
         // types 1 to 3 store the temperatures
@@ -698,9 +670,9 @@ bool parseEDF(const std::vector<std::string> &lines, XBTProfile &profile, const 
             if (temperatureColumn != -1) {
                 temperature = row[temperatureColumn];
             } else {
-                double resistance = row[resistanceColumn];
-                temperature = resistance > 0 ? converter.convertResistaceToTemperature(resistance) : EDFFormat::MAX_TEMPERATURE;
-                temperature = std::min(std::max(temperature, EDFFormat::MIN_TEMPERATURE), EDFFormat::MAX_TEMPERATURE);
+                // the MK21 limits the resistance, not the temperature
+                double resistance = std::min(std::max(row[resistanceColumn], EDFFormat::MIN_RESISTANCE), EDFFormat::MAX_RESISTANCE);
+                temperature = converter.convertResistaceToTemperature(resistance);
             }
             if (temperature < MIN_STORED_TEMPERATURE || temperature > MAX_STORED_TEMPERATURE) {
                 temperature = std::min(std::max(temperature, MIN_STORED_TEMPERATURE), MAX_STORED_TEMPERATURE);

@@ -22,7 +22,7 @@ written to standard output unless `-o` is used.
 
 | Option | |
 |---|---|
-| `-T, --type NUMBER` | message type to save, 1 to 4 (default 4) |
+| `-T, --type NUMBER` | message type to save, 1 to 4 (default 3) |
 | `-o, --output FILE` | write the binary to FILE (`-` is standard output) |
 | `-q, --quiet` | do not print warnings |
 | `-h, --help` | show the help |
@@ -67,7 +67,8 @@ warning.
 
 ```bash
 edf2bin PODS16001.edf -o PODS16001.bin
-edf2bin --type 3 -c WTEC -s "Oleander" --ship-speed 9.5 PODS16001.edf -o PODS16001.bin
+edf2bin --type 4 PODS16001.edf -o PODS16001.bin
+edf2bin -c WTEC -s "Oleander" --ship-speed 9.5 PODS16001.edf -o PODS16001.bin
 cat TD_00001.EDF | edf2bin -c WTEC --rider-name "Jane Doe" > TD_00001.bin
 ```
 
@@ -80,7 +81,8 @@ cat TD_00001.EDF | edf2bin -c WTEC --rider-name "Jane Doe" > TD_00001.bin
   `bin2ascii file.bin 1` writes it back as an AOML EDF, with the layout of the
   MK21 software, the position at the 0.00001 degree resolution of the binary
   and the name of the binary as the raw data filename.
-  Files without resistances get them computed from the temperatures.
+  Files without resistances store their temperatures instead, no resistances
+  are made up for them (see the xbtbinfileutils README for the encoding).
 - **Types 1 to 3** store the temperatures, the probe, recorder, position, date
   and the fields of that type. Temperatures are stored in 12 bits, so values
   outside of -4.00 to 36.94 °C (e.g. the 37.07 °C the MK21 writes when the wire
